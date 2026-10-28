@@ -284,6 +284,65 @@ jobs:
           fi
           echo 'Generated summary:'
           sed -n '1,260p' "$root/pak-index-summary.md"
+      - name: Probe selected cooked UI assets
+        shell: bash
+        run: |
+          set -u
+          root="$RUNNER_TEMP/ark-inspect"
+          out="$root/ui-asset-probe.md"
+          mkdir -p "$root/ui-samples"
+          repak_bin=$(find "$RUNNER_TEMP/repak-tool/unpacked" -type f -name repak -print -quit)
+          pak="$root/paks/pakchunk0-Android_ASTC.pak"
+          if [[ -z "$repak_bin" || ! -f "$pak" ]]; then
+            echo 'Missing repak binary or main PAK; UI asset probe skipped.' | tee "$out"
+            exit 0
+          fi
+          printf '# Selected cooked UI asset probe\n\n' > "$out"
+          printf 'This tests small selected `.uasset`, `.uexp` and map entries via `repak get`; it does not modify the source archive or publish extracted game binaries.\n\n' >> "$out"
+          assets=(
+            'ShooterGame/Content/PrimalEarth/UI/MainMenuUI.uasset'
+            'ShooterGame/Content/PrimalEarth/UI/MainMenuUI.uexp'
+            'ShooterGame/Content/PrimalEarth/UI/ArkStaticSplashScreen.uasset'
+            'ShooterGame/Content/PrimalEarth/UI/ArkStaticSplashScreen.uexp'
+            'ShooterGame/Content/PrimalEarth/UI/PauseMenu.uasset'
+            'ShooterGame/Content/PrimalEarth/UI/PauseMenu.uexp'
+            'ShooterGame/Content/PrimalEarth/UI/OptionsMenuNew.uasset'
+            'ShooterGame/Content/PrimalEarth/UI/OptionsMenuNew.uexp'
+            'ShooterGame/Content/PrimalEarth/UI/HostSession_Mobile.uasset'
+            'ShooterGame/Content/PrimalEarth/UI/HostSession_Mobile.uexp'
+            'ShooterGame/Content/PrimalEarth/UI/MapSelect_Session.uasset'
+            'ShooterGame/Content/PrimalEarth/UI/MapSelect_Session.uexp'
+            'ShooterGame/Content/PrimalEarth/UI/Textures/MainMenuPanelBG.uasset'
+            'ShooterGame/Content/PrimalEarth/UI/Textures/MainMenuPanelBG.uexp'
+            'ShooterGame/Content/Maps/MainMenu.umap'
+            'ShooterGame/Content/Maps/MainMenu.uexp'
+          )
+          for entry in "${assets[@]}"; do
+            name=$(basename "$entry")
+            target="$root/ui-samples/$name"
+            err="$root/ui-samples/$name.stderr.txt"
+            echo "## $entry" >> "$out"
+            if "$repak_bin" get "$pak" "$entry" > "$target" 2> "$err"; then
+              size=$(stat -c '%s' "$target")
+              echo "- Extraction: **success**; extracted bytes: $size" >> "$out"
+              python - "$target" >> "$out" <<'PY'
+          import sys,re, pathlib
+          p=pathlib.Path(sys.argv[1]); b=p.read_bytes()
+          print(f'- Size: {len(b):,} bytes')
+          print(f'- Header (hex): `{b[:32].hex()}`')
+          strings=[]
+          for m in re.finditer(rb'[ -~]{5,}', b):
+              s=m.group().decode('ascii','replace').strip()
+              if s and s not in strings: strings.append(s)
+          print('- Readable embedded strings (up to 20):')
+          for s in strings[:20]: print(f'  - `{s[:180]}`')
+          PY
+            else
+              echo "- Extraction: **failed**; stderr: `$(head -c 600 "$err" | tr '\n' ' ')`" >> "$out"
+            fi
+            echo >> "$out"
+          done
+          sed -n '1,260p' "$out"
       - name: Upload inspection report
         uses: actions/upload-artifact@v4
         with:
@@ -293,4 +352,5 @@ jobs:
             ${{ runner.temp }}/ark-inspect/archive_inventory.tsv
             ${{ runner.temp }}/ark-inspect/pak-index-summary.md
             ${{ runner.temp }}/ark-inspect/pak-file-lists/
+            ${{ runner.temp }}/ark-inspect/ui-asset-probe.md
           retention-days: 7
