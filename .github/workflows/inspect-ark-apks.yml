@@ -140,6 +140,20 @@ jobs:
                                       signatures = {'PNG signature': bytes.fromhex('89504e470d0a1a0a'), 'ZIP local header': b'PK\\x03\\x04', 'GZIP': bytes.fromhex('1f8b'), '7z': bytes.fromhex('377abcaf271c'), 'SQLite': b'SQLite format 3', 'UE4 PAK magic little-endian': bytes.fromhex('e1126f5a'), 'Zstandard': bytes.fromhex('28b52ffd')}
                                       hits = [name for name, sig in signatures.items() if sig in first or sig in last]
                                       lines.append(f'- Recognized signatures present in first/last sample: {", ".join(hits) if hits else "none of the checked signatures"}')
+                                      try:
+                                          with apk.open(e) as payload:
+                                              with zipfile.ZipFile(payload, 'r') as gamezip:
+                                                  game_entries = gamezip.infolist()
+                                                  lines += ['', '#### Embedded game-data archive entries', f'- The large payload is readable as a ZIP archive with **{len(game_entries)} entries**:', '']
+                                                  for gi in game_entries:
+                                                      lines.append(f'- `{gi.filename}` — uncompressed {gi.file_size:,} bytes; stored size {gi.compress_size:,}; method={gi.compress_type}')
+                                                      try:
+                                                          with gamezip.open(gi) as gf: gh = gf.read(32)
+                                                          lines.append(f'  - First 32 bytes: `{gh.hex()}` | `{printable(gh)}`')
+                                                      except Exception as sig_exc:
+                                                          lines.append(f'  - Could not read signature sample: {type(sig_exc).__name__}: {sig_exc}')
+                                      except Exception as nested_exc:
+                                          lines.append(f'- Could not parse the inner payload as a ZIP: {type(nested_exc).__name__}: {nested_exc}')
                                   except Exception as exc:
                                       lines.append(f'- Could not sample payload signature: {type(exc).__name__}: {exc}')
                   except Exception as exc: lines.append(f'- ERROR inspecting APK: {type(exc).__name__}: {exc}')
