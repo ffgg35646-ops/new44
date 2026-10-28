@@ -23,6 +23,10 @@ CATEGORIES = {
 }
 CATEGORY_RE = {k: re.compile(v, re.I) for k,v in CATEGORIES.items()}
 BINARY_RE = {k: re.compile(v.encode("ascii"), re.I) for k,v in CATEGORIES.items()}
+COMBINED_BINARY_RE = re.compile(
+    b"|".join(b"(?P<" + k.encode("ascii") + b">(?:" + v.pattern + b"))" for k,v in BINARY_RE.items()),
+    re.I
+)
 CODE_EXT = {".java",".kt",".xml",".json",".properties",".txt",".js",".ini",".csv",".as",".uproject",".uplugin"}
 MAX_CODE_LINES_PER_CATEGORY = 250
 
@@ -174,37 +178,44 @@ def scan(root):
     hit_rows=["file\tbytes\tcategory\toccurrences\tsamples"]
     code_rows=["source_file\tline\tcategory\ttext"]
     counts=collections.Counter(); scan_errors=[]; files_scanned=0; bytes_scanned=0; assets_hashed=0
-    for file in files:
+    for file_no,file in enumerate(files,1):
         size=0; is_asset=any(str(file.resolve()).startswith(str(d)+os.sep) for d in asset_dirs)
         if is_asset:
             try:
                 size,h=sha256_file(file)
                 rel=file.relative_to(root/"unpacked").as_posix()
-                hash_rows.append(f"{file.parent.name}.pak\t{rel}\t{size}\t{h}")
+                hash_rows.append(f"{file.parent.name}.pak\\t{rel}\\t{size}\\t{h}")
                 assets_hashed+=1
-            except Exception as e: scan_errors.append(f"asset_hash\t{file}\t{type(e).__name__}:{e}")
+            except Exception as e: scan_errors.append(f"asset_hash\\t{file}\\t{type(e).__name__}:{e}")
         try:
             size=file.stat().st_size
             if size==0:
-                files_scanned+=1; continue
+                files_scanned+=1
+                if file_no % 1000 == 0: print(f"Scan progress: {file_no:,}/{len(files):,} files; {bytes_scanned:,} bytes",flush=True)
+                continue
+            per=collections.Counter(); ex_by_cat=collections.defaultdict(list)
             with file.open("rb") as f, mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ) as data:
-                for cat,rx in BINARY_RE.items():
-                    c=0; ex=[]
-                    for m in rx.finditer(data):
-                        c+=1
-                        if len(ex)<3:
-                            lo=max(0,m.start()-72); hi=min(size,m.end()+96)
-                            fragment=bytes(data[lo:hi])
-                            chunks=re.findall(rb"[\x20-\x7e]{4,}",fragment)
-                            sample=" | ".join(s.decode("ascii","replace")[:160] for s in chunks[:4])
-                            if not sample: sample=m.group(0).decode("ascii","replace")
-                            ex.append(sample.replace("\t"," ").replace("\n"," "))
-                    if c:
-                        counts[cat]+=c
-                        hit_rows.append(f"{file.relative_to(root).as_posix()}\t{size}\t{cat}\t{c}\t{' || '.join(ex)}")
+                for m in COMBINED_BINARY_RE.finditer(data):
+                    cat=m.lastgroup
+                    if not cat: continue
+                    per[cat]+=1
+                    if len(ex_by_cat[cat])<3:
+                        lo=max(0,m.start()-72); hi=min(size,m.end()+96)
+                        fragment=bytes(data[lo:hi])
+                        chunks=re.findall(rb"[\\x20-\\x7e]{4,}",fragment)
+                        sample=" | ".join(s.decode("ascii","replace")[:160] for s in chunks[:4])
+                        if not sample: sample=m.group(0).decode("ascii","replace")
+                        ex_by_cat[cat].append(sample.replace("\\t"," ").replace("\\n"," "))
+            for cat,count in per.items():
+                counts[cat]+=count
+                hit_rows.append(f"{file.relative_to(root).as_posix()}\\t{size}\\t{cat}\\t{count}\\t{' || '.join(ex_by_cat[cat])}")
             files_scanned+=1; bytes_scanned+=size
+            if file_no % 1000 == 0:
+                print(f"Scan progress: {file_no:,}/{len(files):,} files; {bytes_scanned:,} bytes",flush=True)
         except Exception as e:
-            scan_errors.append(f"content_scan\t{file}\t{type(e).__name__}:{e}")
+            scan_errors.append(f"content_scan\\t{file}\\t{type(e).__name__}:{e}")
+        if file_no % 1000 == 0:
+            print(f"Hashed PAK assets: {assets_hashed:,}; accumulated content errors: {len(scan_errors):,}",flush=True)
     (root/"pak-asset-sha256.tsv").write_text("\n".join(hash_rows)+"\n",encoding="utf-8")
     (root/"content-hits.tsv").write_text("\n".join(hit_rows)+"\n",encoding="utf-8")
     # Decode and scan every source/resource text line, retaining a bounded set of examples per category.
