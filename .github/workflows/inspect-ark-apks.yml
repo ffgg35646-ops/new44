@@ -8,40 +8,75 @@ permissions:
   contents: read
 jobs:
   inspect:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - name: Download exact Release asset using read-only token
+      - name: Diagnose GitHub API access and download asset
         env:
           APKS_READ_TOKEN: ${{ secrets.APKS_READ_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           if [[ -z "${APKS_READ_TOKEN:-}" ]]; then
-            echo 'APKS_READ_TOKEN secret is missing or unavailable to this workflow.'
+            echo 'ERROR: APKS_READ_TOKEN secret is empty or unavailable.'
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/ark-inspect" "$RUNNER_TEMP/apks"
-          url='https://api.github.com/repos/ffgg35646-ops/new44/releases/assets/683305514'
-          code=$(curl --silent --show-error --location --retry 2 --retry-all-errors \
-            -H 'Accept: application/octet-stream' \
-            -H "Authorization: Bearer ${APKS_READ_TOKEN}" \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            -w '%{http_code}' -o "$RUNNER_TEMP/apks/tryrtyrt.apks" "$url")
+          api='https://api.github.com'
+          headers=(-H 'Accept: application/vnd.github+json' -H "Authorization: Bearer ${APKS_READ_TOKEN}" -H 'X-GitHub-Api-Version: 2022-11-28')
+          get_json() {
+            local path="$1" outfile="$2"
+            local code
+            code=$(curl --silent --show-error --location --max-time 30 -o "$outfile" -w '%{http_code}' "${headers[@]}" "$api$path") || true
+            echo "API GET $path -> HTTP ${code:-curl-error}"
+            python - "$outfile" <<'PY'
+          import json,sys
+          p=sys.argv[1]
+          try:
+              d=json.load(open(p,encoding='utf-8'))
+              if isinstance(d,dict):
+                  for k in ('message','documentation_url','login','name','tag_name','draft','state','size','browser_download_url','permissions','private','visibility'):
+                      if k in d: print(f'{k}: {d[k]}')
+              else: print(f'Response is JSON {type(d).__name__}; items={len(d)}')
+          except Exception:
+              print(open(p,'rb').read(500).decode('utf-8','replace'))
+          PY
+          }
+          get_json '/user' "$RUNNER_TEMP/ark-inspect/user.json"
+          get_json '/repos/ffgg35646-ops/new44' "$RUNNER_TEMP/ark-inspect/repo.json"
+          get_json '/repos/ffgg35646-ops/new44/releases/426131202' "$RUNNER_TEMP/ark-inspect/release.json"
+          get_json '/repos/ffgg35646-ops/new44/releases/assets/683305514' "$RUNNER_TEMP/ark-inspect/asset.json"
+          echo '--- Testing binary endpoint without following redirects ---'
+          asset_url="$api/repos/ffgg35646-ops/new44/releases/assets/683305514"
+          code=$(curl --silent --show-error --max-time 60 -D "$RUNNER_TEMP/ark-inspect/asset-headers.txt" -o "$RUNNER_TEMP/ark-inspect/asset-response.bin" -w '%{http_code}' -H 'Accept: application/octet-stream' -H "Authorization: Bearer ${APKS_READ_TOKEN}" -H 'X-GitHub-Api-Version: 2022-11-28' "$asset_url") || true
           unset APKS_READ_TOKEN
-          echo "HTTP status from final download response: ${code}"
-          if [[ "$code" != '200' ]]; then
-            echo 'Asset download failed. Response headers and first response bytes will be checked without printing credentials.'
+          echo "Binary endpoint initial status: ${code:-curl-error}"
+          grep -iE '^(HTTP/|location:|content-type:)' "$RUNNER_TEMP/ark-inspect/asset-headers.txt" || true
+          if [[ "$code" == '200' ]]; then
+            cp "$RUNNER_TEMP/ark-inspect/asset-response.bin" "$RUNNER_TEMP/apks/tryrtyrt.apks"
+          elif [[ "$code" == '302' || "$code" == '301' || "$code" == '307' || "$code" == '308' ]]; then
+            location=$(python - "$RUNNER_TEMP/ark-inspect/asset-headers.txt" <<'PY'
+          import sys
+          vals=[x.split(':',1)[1].strip() for x in open(sys.argv[1],errors='replace') if x.lower().startswith('location:')]
+          print(vals[-1] if vals else '')
+          PY
+          )
+            if [[ -z "$location" ]]; then echo 'ERROR: redirect had no Location header'; exit 1; fi
+            echo 'Redirect provided; downloading its temporary location without forwarding the API token.'
+            curl --fail --location --retry 2 --retry-all-errors --silent --show-error --max-time 5400 "$location" -o "$RUNNER_TEMP/apks/tryrtyrt.apks"
+          else
+            echo '--- Safe response body excerpt ---'
+            head -c 1500 "$RUNNER_TEMP/ark-inspect/asset-response.bin" | strings | head -c 1500 || true
+            echo
+            echo 'Download stopped so the exact access error can be diagnosed from the metadata above.'
             exit 1
           fi
           actual_size=$(stat -c '%s' "$RUNNER_TEMP/apks/tryrtyrt.apks")
           actual_sha=$(sha256sum "$RUNNER_TEMP/apks/tryrtyrt.apks" | cut -d' ' -f1)
           echo "Downloaded bytes: ${actual_size}"
           echo "Downloaded SHA-256: ${actual_sha}"
-          echo 'Expected GitHub asset size: 1719866207'
-          echo 'Expected GitHub asset SHA-256: 8a49c3776c38ae6e82fbe8edd2a85c2cadfd96f1515b08168543eb666dc116a4'
           if [[ "$actual_size" != '1719866207' || "$actual_sha" != '8a49c3776c38ae6e82fbe8edd2a85c2cadfd96f1515b08168543eb666dc116a4' ]]; then
-            echo 'Integrity check failed: downloaded bytes do not match the asset metadata recorded by GitHub.'
+            echo 'ERROR: downloaded bytes do not match the GitHub asset size and digest.'
             exit 1
           fi
       - name: Inventory APKS and nested APK file contents
@@ -49,95 +84,52 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os, zipfile, hashlib, shutil, re, collections, json
+          import os, zipfile, hashlib, shutil, re, collections
           from pathlib import Path
-          base = Path(os.environ['RUNNER_TEMP'])
-          apks = base / 'apks' / 'tryrtyrt.apks'
-          out = base / 'ark-inspect'
-          out.mkdir(parents=True, exist_ok=True)
-          sz = apks.stat().st_size
-          h = hashlib.sha256()
+          base=Path(os.environ['RUNNER_TEMP']); apks=base/'apks'/'tryrtyrt.apks'; out=base/'ark-inspect'; out.mkdir(parents=True,exist_ok=True)
+          h=hashlib.sha256()
           with apks.open('rb') as f:
-              for block in iter(lambda: f.read(8 * 1024 * 1024), b''): h.update(block)
-          digest = h.hexdigest()
-          lines = ['# ARK APKS inspection report', '',
-                   f'- Source: GitHub Release asset `tryrtyrt.apks`',
-                   f'- Size: {sz:,} bytes ({sz/1024**3:.3f} GiB)',
-                   f'- SHA-256: `{digest}`',
-                   '- Inspection performed on GitHub Actions runner; no APK was installed or executed.', '']
-          inventory = ['scope\tpath\tuncompressed_bytes\tcompressed_bytes\tcompression_method']
-          ui_hits, unreal_hits, unity_hits = [], [], []
-          stats = collections.Counter()
-          def suffix(n): return Path(n.lower()).suffix or '[no extension]'
-          ui_re = re.compile(r'(ui|hud|menu|widget|font|icon|atlas|texture|sprite|button|panel|window|logo|interface|screen|material|\.uasset$|\.umap$|\.uexp$)', re.I)
-          unreal_re = re.compile(r'(\.pak$|\.ucas$|\.utoc$|\.uasset$|\.umap$|\.uexp$|libUE4\.so|libUnreal\.so|UnrealEngine|/Engine/)', re.I)
-          unity_re = re.compile(r'(libunity\.so|libil2cpp\.so|global-metadata\.dat|assets/bin/Data/|sharedassets.*\.assets$|resources\.assets$)', re.I)
-          with zipfile.ZipFile(apks, 'r') as outer:
-              outer_infos = outer.infolist()
-              lines += ['## APKS container', f'- Top-level entries: **{len(outer_infos)}**', '']
-              for inf in outer_infos:
-                  inventory.append(f'APKS\t{inf.filename}\t{inf.file_size}\t{inf.compress_size}\t{inf.compress_type}')
-                  lines.append(f'- `{inf.filename}` — {inf.file_size:,} bytes (compressed {inf.compress_size:,})')
-              apk_infos = [x for x in outer_infos if x.filename.lower().endswith('.apk') and not x.is_dir()]
-              lines += ['', f'## Nested APK splits: {len(apk_infos)}', '']
-              if not apk_infos: lines.append('- No nested .apk entries detected.')
-              for idx, inf in enumerate(apk_infos, 1):
-                  tmp = base / f'apk-split-{idx}.apk'
-                  lines.append(f'### {idx}. `{inf.filename}`')
+              for b in iter(lambda:f.read(8*1024*1024),b''): h.update(b)
+          lines=['# ARK APKS inspection report','',f'- Asset: `tryrtyrt.apks`',f'- Size: {apks.stat().st_size:,} bytes',f'- SHA-256: `{h.hexdigest()}`','- No APK installed or executed.','']
+          inventory=['scope\tpath\tuncompressed_bytes\tcompressed_bytes\tcompression_method']; ui=[]; unreal=[]; unity=[]
+          ui_re=re.compile(r'(ui|hud|menu|widget|font|icon|atlas|texture|sprite|button|panel|window|logo|interface|screen|material|\.uasset$|\.umap$|\.uexp$)',re.I)
+          ue_re=re.compile(r'(\.pak$|\.ucas$|\.utoc$|\.uasset$|\.umap$|\.uexp$|libUE4\.so|libUnreal\.so|UnrealEngine|/Engine/)',re.I)
+          un_re=re.compile(r'(libunity\.so|libil2cpp\.so|global-metadata\.dat|assets/bin/Data/|sharedassets.*\.assets$|resources\.assets$)',re.I)
+          with zipfile.ZipFile(apks) as outer:
+              outer_infos=outer.infolist(); lines+=['## Outer APKS entries',f'- Count: {len(outer_infos)}','']
+              for x in outer_infos:
+                  inventory.append(f'APKS\t{x.filename}\t{x.file_size}\t{x.compress_size}\t{x.compress_type}'); lines.append(f'- `{x.filename}` — {x.file_size:,} bytes')
+              apk_infos=[x for x in outer_infos if x.filename.lower().endswith('.apk') and not x.is_dir()]
+              lines+=['',f'## APK splits: {len(apk_infos)}','']
+              for idx,x in enumerate(apk_infos,1):
+                  tmp=base/f'split-{idx}.apk'; lines.append(f'### `{x.filename}`')
                   try:
-                      with outer.open(inf) as src, tmp.open('wb') as dst: shutil.copyfileobj(src, dst, 8*1024*1024)
-                      with zipfile.ZipFile(tmp, 'r') as apk:
-                          entries = apk.infolist()
-                          extcounts = collections.Counter(suffix(x.filename) for x in entries)
-                          android_manifest = any(x.filename == 'AndroidManifest.xml' for x in entries)
-                          dexes = [x.filename for x in entries if re.fullmatch(r'classes(\d+)?\.dex', x.filename.rsplit('/',1)[-1])]
-                          native = [x for x in entries if x.filename.lower().endswith('.so')]
-                          assets = [x for x in entries if x.filename.lower().startswith('assets/') and not x.is_dir()]
-                          resource_hits = []
-                          for x in entries:
-                              p = x.filename; low = p.lower()
-                              inventory.append(f'{inf.filename}\t{p}\t{x.file_size}\t{x.compress_size}\t{x.compress_type}')
-                              if unreal_re.search(p):
-                                  if len(unreal_hits) < 500: unreal_hits.append((inf.filename,p,x.file_size))
-                              if unity_re.search(p):
-                                  if len(unity_hits) < 500: unity_hits.append((inf.filename,p,x.file_size))
-                              if ui_re.search(p) and len(ui_hits) < 500: ui_hits.append((inf.filename,p,x.file_size))
-                              if low.endswith(('.pak','.ucas','.utoc','.uasset','.umap','.uexp')): resource_hits.append(x)
-                          lines += [f'- Uncompressed APK size: {inf.file_size:,} bytes',
-                                    f'- Entries: {len(entries):,}',
-                                    f'- AndroidManifest.xml present: {android_manifest}',
-                                    f'- DEX files: {len(dexes)}' + (f' — {", ".join(dexes[:20])}' if dexes else ''),
-                                    f'- Native .so libraries: {len(native)}',
-                                    f'- `assets/` entries: {len(assets):,}',
-                                    f'- Frequent extensions: {", ".join(f"{k}={v}" for k,v in extcounts.most_common(20))}',
-                                    '- Largest entries:']
-                          for x in sorted(entries,key=lambda e:e.file_size,reverse=True)[:20]:
-                              lines.append(f'  - `{x.filename}` — {x.file_size:,} bytes')
-                          lines.append(f'- Unreal-style packaged resource extensions in APK: {len(resource_hits)}')
-                          for x in resource_hits[:150]: lines.append(f'  - `{x.filename}` — {x.file_size:,} bytes')
-                  except Exception as e:
-                      lines.append(f'- ERROR while inspecting nested APK: {type(e).__name__}: {e}')
-                  finally:
-                      try: tmp.unlink(missing_ok=True)
-                      except Exception: pass
-          lines += ['', '## UI / graphics filename candidates', '']
-          if ui_hits:
-              lines += [f'- `{scope}` → `{p}` — {n:,} bytes' for scope,p,n in ui_hits]
-          else: lines.append('- No paths matched common UI/graphics keywords. That does not prove UI assets are absent; names may be encrypted or generic.')
-          lines += ['', '## Unreal Engine filename candidates', '']
-          if unreal_hits: lines += [f'- `{scope}` → `{p}` — {n:,} bytes' for scope,p,n in unreal_hits]
-          else: lines.append('- No obvious Unreal-style resource filenames found within the inspected APK splits.')
-          lines += ['', '## Unity filename candidates', '']
-          if unity_hits: lines += [f'- `{scope}` → `{p}` — {n:,} bytes' for scope,p,n in unity_hits]
-          else: lines.append('- No obvious Unity-style filenames found within the inspected APK splits.')
-          lines += ['', '## Interpretation limits',
-                    '- `.apks` usually contains base and configuration APK splits. A successful integrity check verifies that the inspected bytes match the asset metadata recorded by GitHub.',
-                    '- This inspection cannot establish that optional game data downloaded after installation is included unless such data is present in this archive.',
-                    '- This report inventories names and sizes; encrypted, packed, or generic-named resources may require further format-specific analysis.', '']
-          (out/'report.md').write_text('\n'.join(lines), encoding='utf-8')
-          (out/'archive_inventory.tsv').write_text('\n'.join(inventory)+'\n', encoding='utf-8')
+                      with outer.open(x) as src,tmp.open('wb') as dst: shutil.copyfileobj(src,dst,8*1024*1024)
+                      with zipfile.ZipFile(tmp) as apk:
+                          es=apk.infolist(); exts=collections.Counter(Path(e.filename.lower()).suffix or '[no extension]' for e in es)
+                          dex=[e.filename for e in es if re.fullmatch(r'classes(\d+)?\.dex',e.filename.rsplit('/',1)[-1])]
+                          assets=[e for e in es if e.filename.lower().startswith('assets/') and not e.is_dir()]
+                          native=[e for e in es if e.filename.lower().endswith('.so')]
+                          resources=[]
+                          for e in es:
+                              p=e.filename; inventory.append(f'{x.filename}\t{p}\t{e.file_size}\t{e.compress_size}\t{e.compress_type}')
+                              if ui_re.search(p) and len(ui)<800: ui.append((x.filename,p,e.file_size))
+                              if ue_re.search(p) and len(unreal)<800: unreal.append((x.filename,p,e.file_size))
+                              if un_re.search(p) and len(unity)<800: unity.append((x.filename,p,e.file_size))
+                              if p.lower().endswith(('.pak','.ucas','.utoc','.uasset','.umap','.uexp')): resources.append(e)
+                          lines += [f'- Uncompressed size: {x.file_size:,} bytes',f'- Entries: {len(es):,}',f'- AndroidManifest.xml present: {any(e.filename=="AndroidManifest.xml" for e in es)}',f'- DEX: {len(dex)}; native SO: {len(native)}; assets/: {len(assets)}',f'- Common extensions: {", ".join(f"{k}={v}" for k,v in exts.most_common(20))}','- Largest entries:']
+                          for e in sorted(es,key=lambda z:z.file_size,reverse=True)[:20]: lines.append(f'  - `{e.filename}` — {e.file_size:,} bytes')
+                          lines.append(f'- UE packaged-resource extensions: {len(resources)}')
+                          for e in resources[:200]: lines.append(f'  - `{e.filename}` — {e.file_size:,} bytes')
+                  except Exception as exc: lines.append(f'- ERROR inspecting APK: {type(exc).__name__}: {exc}')
+                  finally: tmp.unlink(missing_ok=True)
+          for title,items in [('UI/graphics filename candidates',ui),('Unreal Engine filename candidates',unreal),('Unity filename candidates',unity)]:
+              lines+=['',f'## {title}', '']
+              lines += [f'- `{scope}` → `{p}` — {n:,} bytes' for scope,p,n in items] if items else ['- No obvious file-path matches; resources may use generic or packed names.']
+          lines+=['','## Limitation','- This inventories this APKS archive and APK splits only. Any game data downloaded separately at runtime may not be included.','']
+          (out/'report.md').write_text('\n'.join(lines),encoding='utf-8'); (out/'archive_inventory.tsv').write_text('\n'.join(inventory)+'\n',encoding='utf-8')
           print('\n'.join(lines))
-          print(f'Inventory entries written: {len(inventory)-1:,}')
+          print(f'Inventory rows: {len(inventory)-1:,}')
           PY
       - name: Upload inspection report
         uses: actions/upload-artifact@v4
