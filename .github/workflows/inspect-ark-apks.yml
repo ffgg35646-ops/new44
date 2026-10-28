@@ -99,6 +99,9 @@ jobs:
               outer_infos=outer.infolist(); lines+=['## Outer APKS entries',f'- Count: {len(outer_infos)}','']
               for x in outer_infos:
                   inventory.append(f'APKS\t{x.filename}\t{x.file_size}\t{x.compress_size}\t{x.compress_type}'); lines.append(f'- `{x.filename}` — {x.file_size:,} bytes')
+                  if x.filename == 'APKCube.txt':
+                      try: lines += ['', '### Bundler metadata file (APKCube.txt)', f'`{outer.read(x).decode("utf-8", "replace").strip()}`', '']
+                      except Exception as exc: lines.append(f'- Could not read APKCube.txt: {exc}')
               apk_infos=[x for x in outer_infos if x.filename.lower().endswith('.apk') and not x.is_dir()]
               lines+=['',f'## APK splits: {len(apk_infos)}','']
               for idx,x in enumerate(apk_infos,1):
@@ -121,6 +124,24 @@ jobs:
                           for e in sorted(es,key=lambda z:z.file_size,reverse=True)[:20]: lines.append(f'  - `{e.filename}` — {e.file_size:,} bytes')
                           lines.append(f'- UE packaged-resource extensions: {len(resources)}')
                           for e in resources[:200]: lines.append(f'  - `{e.filename}` — {e.file_size:,} bytes')
+                          for e in es:
+                              if e.filename == 'assets/main.obb.png':
+                                  lines += ['', '#### Large game-data payload signature check', f'- Path: `{e.filename}`', f'- Size: {e.file_size:,} bytes', f'- APK ZIP compression method: {e.compress_type} (0 means stored without ZIP compression)']
+                                  try:
+                                      with apk.open(e) as payload:
+                                          first = payload.read(64)
+                                          try:
+                                              payload.seek(max(0, e.file_size - 64))
+                                              last = payload.read(64)
+                                          except Exception:
+                                              last = b''
+                                      def printable(b): return ''.join(chr(c) if 32 <= c < 127 else '.' for c in b)
+                                      lines += [f'- First 64 bytes (hex): `{first.hex()}`', f'- First bytes (ASCII view): `{printable(first)}`', f'- Last bytes (hex): `{last.hex()}`', f'- Last bytes (ASCII view): `{printable(last)}`']
+                                      signatures = {'PNG signature': bytes.fromhex('89504e470d0a1a0a'), 'ZIP local header': b'PK\\x03\\x04', 'GZIP': bytes.fromhex('1f8b'), '7z': bytes.fromhex('377abcaf271c'), 'SQLite': b'SQLite format 3', 'UE4 PAK magic little-endian': bytes.fromhex('e1126f5a'), 'Zstandard': bytes.fromhex('28b52ffd')}
+                                      hits = [name for name, sig in signatures.items() if sig in first or sig in last]
+                                      lines.append(f'- Recognized signatures present in first/last sample: {", ".join(hits) if hits else "none of the checked signatures"}')
+                                  except Exception as exc:
+                                      lines.append(f'- Could not sample payload signature: {type(exc).__name__}: {exc}')
                   except Exception as exc: lines.append(f'- ERROR inspecting APK: {type(exc).__name__}: {exc}')
                   finally: tmp.unlink(missing_ok=True)
           for title,items in [('UI/graphics filename candidates',ui),('Unreal Engine filename candidates',unreal),('Unity filename candidates',unity)]:
