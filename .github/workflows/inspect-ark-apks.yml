@@ -5,7 +5,7 @@ on:
       - '.github/workflows/inspect-ark-apks.yml'
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   inspect:
     runs-on: ubuntu-24.04
@@ -13,17 +13,17 @@ jobs:
     steps:
       - name: Diagnose GitHub API access and download asset
         env:
-          APKS_READ_TOKEN: ${{ secrets.APKS_READ_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${APKS_READ_TOKEN:-}" ]]; then
-            echo 'ERROR: APKS_READ_TOKEN secret is empty or unavailable.'
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo 'ERROR: The built-in GITHUB_TOKEN is unavailable.'
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/ark-inspect" "$RUNNER_TEMP/apks"
           api='https://api.github.com'
-          headers=(-H 'Accept: application/vnd.github+json' -H "Authorization: Bearer ${APKS_READ_TOKEN}" -H 'X-GitHub-Api-Version: 2022-11-28')
+          headers=(-H 'Accept: application/vnd.github+json' -H "Authorization: Bearer ${GH_TOKEN}" -H 'X-GitHub-Api-Version: 2022-11-28')
           get_json() {
             local path="$1" outfile="$2"
             local code
@@ -49,7 +49,7 @@ jobs:
           echo '--- Testing binary endpoint without following redirects ---'
           asset_url="$api/repos/ffgg35646-ops/new44/releases/assets/683305514"
           code=$(curl --silent --show-error --max-time 60 -D "$RUNNER_TEMP/ark-inspect/asset-headers.txt" -o "$RUNNER_TEMP/ark-inspect/asset-response.bin" -w '%{http_code}' -H 'Accept: application/octet-stream' -H "Authorization: Bearer ${APKS_READ_TOKEN}" -H 'X-GitHub-Api-Version: 2022-11-28' "$asset_url") || true
-          unset APKS_READ_TOKEN
+          unset GH_TOKEN
           echo "Binary endpoint initial status: ${code:-curl-error}"
           grep -iE '^(HTTP/|location:|content-type:)' "$RUNNER_TEMP/ark-inspect/asset-headers.txt" || true
           if [[ "$code" == '200' ]]; then
