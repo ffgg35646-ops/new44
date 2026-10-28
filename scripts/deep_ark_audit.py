@@ -184,9 +184,9 @@ def scan(root):
             try:
                 size,h=sha256_file(file)
                 rel=file.relative_to(root/"unpacked").as_posix()
-                hash_rows.append(f"{file.parent.name}.pak\\t{rel}\\t{size}\\t{h}")
+                hash_rows.append(f"{file.parent.name}.pak\t{rel}\t{size}\t{h}")
                 assets_hashed+=1
-            except Exception as e: scan_errors.append(f"asset_hash\\t{file}\\t{type(e).__name__}:{e}")
+            except Exception as e: scan_errors.append(f"asset_hash\t{file}\t{type(e).__name__}:{e}")
         try:
             size=file.stat().st_size
             if size==0:
@@ -202,18 +202,18 @@ def scan(root):
                     if len(ex_by_cat[cat])<3:
                         lo=max(0,m.start()-72); hi=min(size,m.end()+96)
                         fragment=bytes(data[lo:hi])
-                        chunks=re.findall(rb"[\\x20-\\x7e]{4,}",fragment)
+                        chunks=re.findall(rb"[\x20-\x7e]{4,}",fragment)
                         sample=" | ".join(s.decode("ascii","replace")[:160] for s in chunks[:4])
                         if not sample: sample=m.group(0).decode("ascii","replace")
-                        ex_by_cat[cat].append(sample.replace("\\t"," ").replace("\\n"," "))
+                        ex_by_cat[cat].append(sample.replace("\t"," ").replace("\n"," "))
             for cat,count in per.items():
                 counts[cat]+=count
-                hit_rows.append(f"{file.relative_to(root).as_posix()}\\t{size}\\t{cat}\\t{count}\\t{' || '.join(ex_by_cat[cat])}")
+                hit_rows.append(f"{file.relative_to(root).as_posix()}\t{size}\t{cat}\t{count}\t{' || '.join(ex_by_cat[cat])}")
             files_scanned+=1; bytes_scanned+=size
             if file_no % 1000 == 0:
                 print(f"Scan progress: {file_no:,}/{len(files):,} files; {bytes_scanned:,} bytes",flush=True)
         except Exception as e:
-            scan_errors.append(f"content_scan\\t{file}\\t{type(e).__name__}:{e}")
+            scan_errors.append(f"content_scan\t{file}\t{type(e).__name__}:{e}")
         if file_no % 1000 == 0:
             print(f"Hashed PAK assets: {assets_hashed:,}; accumulated content errors: {len(scan_errors):,}",flush=True)
     (root/"pak-asset-sha256.tsv").write_text("\n".join(hash_rows)+"\n",encoding="utf-8")
