@@ -148,8 +148,31 @@ jobs:
                                                   for gi in game_entries:
                                                       lines.append(f'- `{gi.filename}` — uncompressed {gi.file_size:,} bytes; stored size {gi.compress_size:,}; method={gi.compress_type}')
                                                       try:
-                                                          with gamezip.open(gi) as gf: gh = gf.read(32)
+                                                          with gamezip.open(gi) as gf:
+                                                              gh = gf.read(32)
+                                                              foot = b''
+                                                              if gi.filename.lower().endswith('.pak'):
+                                                                  try:
+                                                                      gf.seek(max(0, gi.file_size - 4096))
+                                                                      foot = gf.read(4096)
+                                                                  except Exception:
+                                                                      foot = b''
                                                           lines.append(f'  - First 32 bytes: `{gh.hex()}` | `{printable(gh)}`')
+                                                          if gi.filename.lower().endswith('.pak'):
+                                                              magic = bytes.fromhex('e1126f5a')
+                                                              offsets = [m.start() for m in re.finditer(re.escape(magic), foot)]
+                                                              lines.append(f'  - UE4 PAK magic (E1 12 6F 5A) offsets in final 4096 bytes: {offsets if offsets else "not found"}')
+                                                              if offsets:
+                                                                  q = offsets[-1]
+                                                                  if len(foot) >= q + 45:
+                                                                      version = int.from_bytes(foot[q+4:q+8], 'little')
+                                                                      index_offset = int.from_bytes(foot[q+8:q+16], 'little', signed=True)
+                                                                      index_size = int.from_bytes(foot[q+16:q+24], 'little', signed=True)
+                                                                      encrypted_flag = foot[q+44]
+                                                                      lines.append(f'  - Parsed footer sample: version={version}, index_offset={index_offset}, index_size={index_size}, encrypted_index_flag_byte={encrypted_flag}')
+                                                          if gi.filename == 'ShooterGame/Script/UI/MainMenu.as':
+                                                              with gamezip.open(gi) as gf: script = gf.read(4096).decode('utf-8', 'replace').strip()
+                                                              lines.append('  - MainMenu script content: ' + script.replace(chr(10), ' '))
                                                       except Exception as sig_exc:
                                                           lines.append(f'  - Could not read signature sample: {type(sig_exc).__name__}: {sig_exc}')
                                       except Exception as nested_exc:
