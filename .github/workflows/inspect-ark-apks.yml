@@ -147,6 +147,13 @@ jobs:
                                                   lines += ['', '#### Embedded game-data archive entries', f'- The large payload is readable as a ZIP archive with **{len(game_entries)} entries**:', '']
                                                   for gi in game_entries:
                                                       lines.append(f'- `{gi.filename}` — uncompressed {gi.file_size:,} bytes; stored size {gi.compress_size:,}; method={gi.compress_type}')
+                                                      if gi.filename.lower().endswith('.pak'):
+                                                          pak_out_dir = out / 'paks'
+                                                          pak_out_dir.mkdir(parents=True, exist_ok=True)
+                                                          pak_target = pak_out_dir / Path(gi.filename).name
+                                                          with gamezip.open(gi) as psrc, pak_target.open('wb') as pdst:
+                                                              shutil.copyfileobj(psrc, pdst, 8 * 1024 * 1024)
+                                                          lines.append(f'  - Copied raw PAK for index listing: `{pak_target.name}` ({pak_target.stat().st_size:,} bytes)')
                                                       try:
                                                           with gamezip.open(gi) as gf:
                                                               gh = gf.read(32)
@@ -171,7 +178,7 @@ jobs:
                                                                       index_hash = foot[q+24:q+44].hex()
                                                                       encrypted_flag = foot[q-1]
                                                                       key_guid = foot[q-17:q-1].hex()
-                                                                      methods = [foot[q+44+i*32:q+44+(i+1)*32].split(b'\\x00',1)[0].decode('ascii','replace') for i in range(5)]
+                                                                      methods = [foot[q+44+i*32:q+44+(i+1)*32].split(bytes([0]),1)[0].decode('ascii','replace') for i in range(5)]
                                                                       lines.append(f'  - Parsed footer: version={version}, index_offset={index_offset}, index_size={index_size}, encrypted_index={encrypted_flag} (0=no, 1=yes), key_guid={key_guid}')
                                                                       lines.append(f'  - PAK compression methods: {methods}')
                                                                       try:
@@ -202,6 +209,81 @@ jobs:
           print('\n'.join(lines))
           print(f'Inventory rows: {len(inventory)-1:,}')
           PY
+      - name: List Unreal PAK contents with repak
+        shell: bash
+        run: |
+          set -u
+          root="$RUNNER_TEMP/ark-inspect"
+          tools_dir="$RUNNER_TEMP/repak-tool"
+          list_dir="$root/pak-file-lists"
+          mkdir -p "$tools_dir" "$list_dir"
+          cd "$tools_dir"
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+            -o repak_cli.tar.xz \
+            https://github.com/trumank/repak/releases/download/v0.2.3/repak_cli-x86_64-unknown-linux-gnu.tar.xz
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+            -o repak_cli.tar.xz.sha256 \
+            https://github.com/trumank/repak/releases/download/v0.2.3/repak_cli-x86_64-unknown-linux-gnu.tar.xz.sha256
+          echo 'Verifying repak release checksum'
+          if ! sha256sum -c repak_cli.tar.xz.sha256; then
+            echo 'Checksum file uses a different filename format; checking the digest directly.'
+            expected=$(awk 'NR==1 {print $1}' repak_cli.tar.xz.sha256)
+            actual=$(sha256sum repak_cli.tar.xz | awk '{print $1}')
+            echo "Expected: $expected"
+            echo "Actual:   $actual"
+            [[ "$expected" == "$actual" ]] || exit 1
+          fi
+          mkdir unpacked
+          tar -xJf repak_cli.tar.xz -C unpacked
+          repak_bin=$(find unpacked -type f -name repak -print -quit)
+          if [[ -z "$repak_bin" ]]; then
+            echo 'Could not find the repak executable in the release archive.'
+            find unpacked -maxdepth 3 -type f -print
+            exit 1
+          fi
+          chmod +x "$repak_bin"
+          "$repak_bin" --version || true
+          printf '# Unreal PAK index listing results\n\n' > "$root/pak-index-summary.md"
+          printf 'The PAK files were extracted from the uploaded APKS only into the temporary GitHub Actions runner. This report lists container indexes; it does not republish the game files.\n\n' >> "$root/pak-index-summary.md"
+          shopt -s nullglob
+          found=0
+          for pak in "$root"/paks/*.pak; do
+            found=1
+            name=$(basename "$pak")
+            list="$list_dir/$name.txt"
+            info="$list_dir/$name.info.txt"
+            errors="$list_dir/$name.errors.txt"
+            echo "Listing: $name ($(stat -c '%s' "$pak") bytes)"
+            if "$repak_bin" info "$pak" > "$info" 2> "$errors.info"; then
+              echo "## $name" >> "$root/pak-index-summary.md"
+              echo >> "$root/pak-index-summary.md"
+              sed -n '1,80p' "$info" >> "$root/pak-index-summary.md"
+              echo >> "$root/pak-index-summary.md"
+            else
+              echo "## $name — repak info failed" >> "$root/pak-index-summary.md"
+              cat "$errors.info" >> "$root/pak-index-summary.md"
+            fi
+            if "$repak_bin" list "$pak" > "$list" 2> "$errors"; then
+              n=$(wc -l < "$list" | tr -d ' ')
+              echo "- Listed paths: **$n**. Full path list: `pak-file-lists/$name.txt`." >> "$root/pak-index-summary.md"
+              echo >> "$root/pak-index-summary.md"
+              echo '### Likely UI, menu, fonts and graphics path matches (up to 250)' >> "$root/pak-index-summary.md"
+              if ! grep -Ei '(ui|hud|menu|widget|font|icon|button|inventory|mainmenu|pause|settings|blueprint|\.uasset$|\.uexp$|\.png$|\.tga$|\.jpg$|\.ttf$|\.otf$)' "$list" | head -n 250 >> "$root/pak-index-summary.md"; then
+                echo '- No path matched the quick UI/graphics filter; files may have generic names.' >> "$root/pak-index-summary.md"
+              fi
+              echo >> "$root/pak-index-summary.md"
+            else
+              echo "- repak list failed for this PAK; see `pak-file-lists/$name.errors.txt`." >> "$root/pak-index-summary.md"
+              sed -n '1,100p' "$errors" >> "$root/pak-index-summary.md"
+              echo >> "$root/pak-index-summary.md"
+            fi
+          done
+          if [[ "$found" == '0' ]]; then
+            echo 'No extracted PAK files were found.' | tee -a "$root/pak-index-summary.md"
+            exit 1
+          fi
+          echo 'Generated summary:'
+          sed -n '1,260p' "$root/pak-index-summary.md"
       - name: Upload inspection report
         uses: actions/upload-artifact@v4
         with:
@@ -209,4 +291,6 @@ jobs:
           path: |
             ${{ runner.temp }}/ark-inspect/report.md
             ${{ runner.temp }}/ark-inspect/archive_inventory.tsv
+            ${{ runner.temp }}/ark-inspect/pak-index-summary.md
+            ${{ runner.temp }}/ark-inspect/pak-file-lists/
           retention-days: 7
