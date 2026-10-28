@@ -164,12 +164,25 @@ jobs:
                                                               lines.append(f'  - UE4 PAK magic (E1 12 6F 5A) offsets in final 4096 bytes: {offsets if offsets else "not found"}')
                                                               if offsets:
                                                                   q = offsets[-1]
-                                                                  if len(foot) >= q + 45:
+                                                                  if len(foot) >= q + 204 and q >= 17:
                                                                       version = int.from_bytes(foot[q+4:q+8], 'little')
                                                                       index_offset = int.from_bytes(foot[q+8:q+16], 'little', signed=True)
                                                                       index_size = int.from_bytes(foot[q+16:q+24], 'little', signed=True)
-                                                                      encrypted_flag = foot[q+44]
-                                                                      lines.append(f'  - Parsed footer sample: version={version}, index_offset={index_offset}, index_size={index_size}, encrypted_index_flag_byte={encrypted_flag}')
+                                                                      index_hash = foot[q+24:q+44].hex()
+                                                                      encrypted_flag = foot[q-1]
+                                                                      key_guid = foot[q-17:q-1].hex()
+                                                                      methods = [foot[q+44+i*32:q+44+(i+1)*32].split(b'\\x00',1)[0].decode('ascii','replace') for i in range(5)]
+                                                                      lines.append(f'  - Parsed footer: version={version}, index_offset={index_offset}, index_size={index_size}, encrypted_index={encrypted_flag} (0=no, 1=yes), key_guid={key_guid}')
+                                                                      lines.append(f'  - PAK compression methods: {methods}')
+                                                                      try:
+                                                                          with gamezip.open(gi) as gf:
+                                                                              gf.seek(index_offset)
+                                                                              index_data = gf.read(index_size)
+                                                                          actual_index_hash = hashlib.sha1(index_data).hexdigest()
+                                                                          lines.append(f'  - Index SHA-1: stored={index_hash}; computed={actual_index_hash}; match={actual_index_hash == index_hash}')
+                                                                          lines.append(f'  - Index first 64 bytes: `{index_data[:64].hex()}`')
+                                                                      except Exception as index_exc:
+                                                                          lines.append(f'  - Could not verify/read PAK index: {type(index_exc).__name__}: {index_exc}')
                                                           if gi.filename == 'ShooterGame/Script/UI/MainMenu.as':
                                                               with gamezip.open(gi) as gf: script = gf.read(4096).decode('utf-8', 'replace').strip()
                                                               lines.append('  - MainMenu script content: ' + script.replace(chr(10), ' '))
