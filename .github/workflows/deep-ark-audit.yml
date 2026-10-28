@@ -1,0 +1,146 @@
+name: Deep static audit of ARK APKS
+on:
+  push:
+    paths:
+      - '.github/workflows/deep-ark-audit.yml'
+      - 'scripts/deep_ark_audit.py'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  deep-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout analysis script
+        uses: actions/checkout@v4
+      - name: Download exact uploaded APKS and verify digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ark-deep-audit"
+          mkdir -p "$root"
+          api='https://api.github.com/repos/ffgg35646-ops/new44/releases/assets/683305514'
+          code=$(curl --silent --show-error --max-time 60 -D "$root/asset-headers.txt" -o "$root/asset-response.bin" -w '%{http_code}' \
+            -H 'Accept: application/octet-stream' -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' "$api" || true)
+          unset GH_TOKEN
+          echo "Initial asset API status: $code"
+          if [[ "$code" == "200" ]]; then
+            mv "$root/asset-response.bin" "$root/tryrtyrt.apks"
+          elif [[ "$code" == "302" || "$code" == "301" || "$code" == "307" || "$code" == "308" ]]; then
+            location=$(python - "$root/asset-headers.txt" <<'PY'
+          import sys
+          vals=[x.split(':',1)[1].strip() for x in open(sys.argv[1],errors='replace') if x.lower().startswith('location:')]
+          print(vals[-1] if vals else '')
+          PY
+          )
+            test -n "$location"
+            curl --fail --location --retry 3 --retry-all-errors --silent --show-error --max-time 5400 "$location" -o "$root/tryrtyrt.apks"
+          else
+            head -c 1200 "$root/asset-response.bin" | strings || true
+            exit 1
+          fi
+          actual_size=$(stat -c '%s' "$root/tryrtyrt.apks")
+          actual_sha=$(sha256sum "$root/tryrtyrt.apks" | cut -d' ' -f1)
+          echo "Downloaded bytes: $actual_size"
+          echo "Downloaded SHA-256: $actual_sha"
+          [[ "$actual_size" == "1719866207" ]]
+          [[ "$actual_sha" == "8a49c3776c38ae6e82fbe8edd2a85c2cadfd96f1515b08168543eb666dc116a4" ]]
+      - name: Hash and extract every APK and embedded archive entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/deep_ark_audit.py extract "$RUNNER_TEMP/ark-deep-audit"
+      - name: Set up Java for DEX decompilation
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Decompile base APK DEX and decode resources using JADX
+        shell: bash
+        run: |
+          set +e
+          root="$RUNNER_TEMP/ark-deep-audit"
+          mkdir -p "$root/tooling/jadx" "$root/jadx-out"
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+            -o "$root/tooling/jadx.zip" https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip
+          if [[ $? -ne 0 ]]; then echo 'JADX download failed' > "$root/jadx.log"; echo 99 > "$root/jadx-exit-code.txt"; exit 0; fi
+          unzip -q -o "$root/tooling/jadx.zip" -d "$root/tooling/jadx"
+          jadx_bin=$(find "$root/tooling/jadx" -type f -path '*/bin/jadx' -print -quit)
+          if [[ -z "$jadx_bin" ]]; then echo 'JADX executable not found' > "$root/jadx.log"; echo 98 > "$root/jadx-exit-code.txt"; exit 0; fi
+          chmod +x "$jadx_bin"
+          "$jadx_bin" --version > "$root/jadx-version.txt" 2>&1
+          "$jadx_bin" -d "$root/jadx-out" "$root/apks/base.apk" > "$root/jadx.log" 2>&1
+          rc=$?
+          echo "$rc" > "$root/jadx-exit-code.txt"
+          find "$root/jadx-out" -type f | wc -l > "$root/jadx-output-file-count.txt"
+          echo "JADX exit code: $rc; output files: $(cat "$root/jadx-output-file-count.txt")"
+          exit 0
+      - name: Install repak and extract every entry from all PAKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ark-deep-audit"
+          mkdir -p "$root/tooling/repak"
+          cd "$root/tooling/repak"
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+            -o repak.tar.xz https://github.com/trumank/repak/releases/download/v0.2.3/repak_cli-x86_64-unknown-linux-gnu.tar.xz
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+            -o repak.sha256 https://github.com/trumank/repak/releases/download/v0.2.3/repak_cli-x86_64-unknown-linux-gnu.tar.xz.sha256
+          expected=$(awk 'NR==1 {print $1}' repak.sha256)
+          actual=$(sha256sum repak.tar.xz | awk '{print $1}')
+          echo "repak expected SHA-256: $expected"
+          echo "repak actual SHA-256:   $actual"
+          [[ "$expected" == "$actual" ]]
+          mkdir unpacked-tool
+          tar -xJf repak.tar.xz -C unpacked-tool
+          repak_bin=$(find unpacked-tool -type f -name repak -print -quit)
+          test -n "$repak_bin"
+          chmod +x "$repak_bin"
+          "$repak_bin" --version > "$root/repak-version.txt" 2>&1
+          python "$GITHUB_WORKSPACE/scripts/deep_ark_audit.py" unpack "$root" "$repak_bin"
+      - name: Scan every extracted file and all asset index paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/deep_ark_audit.py scan "$RUNNER_TEMP/ark-deep-audit"
+      - name: Upload audit reports only (no original game binaries)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ark-deep-static-audit
+          path: |
+            ${{ runner.temp }}/ark-deep-audit/deep-content-scan.md
+            ${{ runner.temp }}/ark-deep-audit/coverage.json
+            ${{ runner.temp }}/ark-deep-audit/apks-source-sha256.txt
+            ${{ runner.temp }}/ark-deep-audit/extraction-summary.txt
+            ${{ runner.temp }}/ark-deep-audit/archive-entry-sha256.tsv
+            ${{ runner.temp }}/ark-deep-audit/pak-asset-sha256.tsv
+            ${{ runner.temp }}/ark-deep-audit/asset-path-matches.tsv
+            ${{ runner.temp }}/ark-deep-audit/content-hits.tsv
+            ${{ runner.temp }}/ark-deep-audit/android-code-hits.tsv
+            ${{ runner.temp }}/ark-deep-audit/pak-file-lists/
+            ${{ runner.temp }}/ark-deep-audit/pak-extraction-status.tsv
+            ${{ runner.temp }}/ark-deep-audit/jadx-version.txt
+            ${{ runner.temp }}/ark-deep-audit/jadx-exit-code.txt
+            ${{ runner.temp }}/ark-deep-audit/jadx-output-file-count.txt
+            ${{ runner.temp }}/ark-deep-audit/jadx.log
+            ${{ runner.temp }}/ark-deep-audit/repak-version.txt
+            ${{ runner.temp }}/ark-deep-audit/repak-logs/
+          retention-days: 7
+      - name: Fail the run if any PAK entry was not fully extracted
+        if: always()
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/ark-deep-audit"
+          if [[ ! -f "$root/pak-extraction-status.tsv" ]]; then echo 'No PAK extraction status exists'; exit 1; fi
+          python - "$root/pak-extraction-status.tsv" <<'PY'
+          import csv,sys
+          rows=list(csv.DictReader(open(sys.argv[1],encoding='utf-8'),delimiter='\t'))
+          bad=[r for r in rows if r['list_status']!='OK' or r['unpack_status']!='OK' or r['listed_entries']!=r['extracted_files']]
+          print(f'PAKs checked: {len(rows)}; complete: {len(rows)-len(bad)}; incomplete: {len(bad)}')
+          for r in bad: print(r)
+          raise SystemExit(1 if bad else 0)
+          PY
