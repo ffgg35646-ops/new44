@@ -124,6 +124,14 @@ jobs:
             "$repak_bin" get "$pak" "$file" > "$out/configs/$name"
           done
           creature_paths=(
+            'ShooterGame/Content/PrimalEarth/CoreBlueprints/Dino_Character_BP.uasset'
+            'ShooterGame/Content/PrimalEarth/CoreBlueprints/Dino_Character_BP.uexp'
+            'ShooterGame/Content/PrimalEarth/Dinos/BaseBPs/DinoSettings_Base.uasset'
+            'ShooterGame/Content/PrimalEarth/Dinos/BaseBPs/DinoSettings_Base.uexp'
+            'ShooterGame/Content/PrimalEarth/Dinos/BaseBPs/DinoSettings_Carnivore.uasset'
+            'ShooterGame/Content/PrimalEarth/Dinos/BaseBPs/DinoSettings_Carnivore.uexp'
+            'ShooterGame/Content/PrimalEarth/Dinos/BaseBPs/DinoSettings_Herbivore.uasset'
+            'ShooterGame/Content/PrimalEarth/Dinos/BaseBPs/DinoSettings_Herbivore.uexp'
             'ShooterGame/Content/PrimalEarth/Dinos/Dodo/Dodo_Character_BP.uasset'
             'ShooterGame/Content/PrimalEarth/Dinos/Dodo/Dodo_Character_BP.uexp'
             'ShooterGame/Content/PrimalEarth/Dinos/Raptor/Raptor_Character_BP.uasset'
