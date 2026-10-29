@@ -45,7 +45,8 @@ jobs:
           fi
           if [[ -z "$apksigner" || -z "$zipalign" ]]; then
             curl --fail --location --retry 2 --retry-all-errors --connect-timeout 15 --max-time 240 --silent --show-error \
-              -o "$root/build-tools.zip" https://dl.google.com/android/repository/build-tools_r35-linux.zip
+              -o "$root/build-tools.zip" https://dl.google.com/android/repository/build-tools_r35.0.1_linux.zip
+            echo '5993499f3229a021b89f87088c57242aeefaa62316bf3d69da7de40bfd5350f1  '"$root/build-tools.zip" | sha256sum -c -
             unzip -q "$root/build-tools.zip" -d "$root/tools"
             apksigner=$(find "$root/tools" -type f -name apksigner -print -quit)
             zipalign=$(find "$root/tools" -type f -name zipalign -print -quit)
