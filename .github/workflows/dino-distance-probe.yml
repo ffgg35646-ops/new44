@@ -152,7 +152,7 @@ jobs:
               data=p.read_bytes()
               text=data.decode('utf-8','replace')
               lines=text.splitlines()
-              picked=[(i,line) for i,line in enumerate(lines,1) if re.search(r'(?i)view.?distance|cull.?distance|net.?cull|draw.?distance|lod|scalability|sg\.|grass\.CullDistanceScale',line)]
+              picked=[(i,line) for i,line in enumerate(lines,1) if re.search(r'(?i)view.?distance|cull.?distance|net.?cull|draw.?distance|r\.SkeletalMeshLODRadiusScale|sg\.ViewDistanceQuality|grass\.CullDistanceScale',line)]
               report += ['', f'### {p.name} ({len(data)} bytes; {len(picked)} matching lines)']
               report += [f'{i}: {line.strip()}' for i,line in picked] if picked else ['No matching setting lines in this file.']
           report += ['', '## Creature blueprint property-name probes']
