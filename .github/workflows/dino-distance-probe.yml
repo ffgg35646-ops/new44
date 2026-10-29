@@ -98,7 +98,7 @@ jobs:
           test -n "$repak_bin"
           chmod +x "$repak_bin"
           "$repak_bin" --version
-          echo "$repak_bin" > "$root/repak-bin.txt"
+          echo "$(realpath "$repak_bin")" > "$root/repak-bin.txt"
 
       - name: Extract game distance configs and representative creature blueprints
         shell: bash
