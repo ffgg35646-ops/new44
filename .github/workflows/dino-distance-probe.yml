@@ -144,7 +144,7 @@ jobs:
           from pathlib import Path
           root=Path(sys.argv[1])
           report=[]
-          terms=re.compile(rb'NetCullDistanceSquared|CullDistance|MaxDrawDistance|MinDrawDistance|ViewDistance|LODDistance|bAlwaysRelevant|bOnlyRelevantToOwner|NetUpdateFrequency|bNetLoadOnClient|bReplicates|Replication')
+          terms=re.compile(rb'NetCullDistanceSquared|CullDistance|MaxDrawDistance|MinDrawDistance|ViewDistance|LODDistance|NetUpdateFrequency')
           report.append('# Targeted dinosaur visibility probe')
           report.append('')
           report.append('## Game configuration entries')
@@ -170,7 +170,7 @@ jobs:
                   printable=''.join(chr(b) if 32 <= b < 127 else '.' for b in frag)
                   report.append(f'offset={m.start()} token={m.group(0).decode("ascii","replace")} hex={frag.hex()} ascii={printable}')
           (root/'targeted-dino-visibility-report.md').write_text('\n'.join(report)+'\n',encoding='utf-8')
-          print((root/'targeted-dino-visibility-report.md').read_text()[:18000])
+          print((root/'targeted-dino-visibility-report.md').read_text()[-18000:])
           PY
 
       - name: Upload the targeted report (not game binaries)
@@ -178,5 +178,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: targeted-dino-visibility-probe
-          path: ${{ runner.temp }}/dino-probe/targeted-dino-visibility-report.md
+          path: ${{ runner.temp }}/dino-probe/probe-files/targeted-dino-visibility-report.md
           retention-days: 7
