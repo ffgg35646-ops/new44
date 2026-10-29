@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { LogoutButton } from "@/app/components/logout-button";
+import { QualitySettings } from "@/app/components/quality-settings";
 import { isAdminAuthenticated } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
@@ -18,13 +19,16 @@ export default async function DashboardPage() {
           <span className="nav-square" aria-hidden="true">⌂</span><span>الرئيسية</span>
           <span className="active-indicator" aria-hidden="true" />
         </div>
+        <a className="sidebar-link" href="#quality-settings">
+          <span className="nav-square" aria-hidden="true">◒</span><span>جودة الرسومات</span>
+        </a>
         <div className="sidebar-bottom">
           <div className="sidebar-status">
             <span className="status-led" aria-hidden="true" />
             <div><strong>جلسة الأدمن نشطة</strong><span>تم التحقق من الدخول</span></div>
           </div>
           <LogoutButton />
-          <p className="sidebar-version">نسخة تأسيسية · 0.1</p>
+          <p className="sidebar-version">نسخة تأسيسية · 0.2</p>
         </div>
       </aside>
 
@@ -41,8 +45,8 @@ export default async function DashboardPage() {
         <section className="welcome-panel">
           <div className="welcome-copy">
             <span className="stage-tag"><span /> المرحلة الأولى</span>
-            <h2>أهلًا بيك في لوحة الإدارة</h2>
-            <p>الهيكل الأساسي جاهز. هنضيف الأقسام والأدوات المطلوبة بعد ما تحدد الوظائف اللي عايزها، من غير ما نفترض أي أدوات من عندنا.</p>
+            <h2>إعدادات اللعبة من مكان واحد</h2>
+            <p>اضبط مستوى جودة الرسومات من شريط واحد، واختر مستوى منخفض أو متوسط أو مرتفع. واجهة التحكم جاهزة؛ تطبيق القيمة داخل اللعبة يحتاج ربطًا منفصلًا بعميل اللعبة.</p>
           </div>
           <div className="welcome-art" aria-hidden="true">
             <span className="art-ring art-ring-one" /><span className="art-ring art-ring-two" /><span className="art-core">A</span>
@@ -50,15 +54,20 @@ export default async function DashboardPage() {
         </section>
 
         <div className="section-heading">
-          <div><p className="eyebrow">WORKSPACE STATUS</p><h2>مساحة العمل</h2></div>
-          <span className="plain-status">بانتظار تحديد الوظائف</span>
+          <div><p className="eyebrow">GRAPHICS SETTINGS</p><h2>التحكم في الجودة</h2></div>
+          <span className="plain-status">إعداد أولي</span>
         </div>
-        <section className="empty-state" aria-labelledby="empty-title">
-          <div className="empty-icon" aria-hidden="true"><span>＋</span></div>
-          <h3 id="empty-title">جاهزين نضيف أول أداة</h3>
-          <p>مفيش حاليًا تحكم في سيرفرات أو إعدادات لعبة مربوط باللوحة. دي نسخة تأسيسية لتسجيل الدخول وتأمين مساحة الأدمن فقط.</p>
-          <div className="empty-state-foot"><span className="empty-state-line" /><span>بانتظار متطلباتك</span><span className="empty-state-line" /></div>
+
+        <QualitySettings />
+
+        <section className="next-tools-panel">
+          <div className="next-tools-icon" aria-hidden="true">＋</div>
+          <div>
+            <h3>الأداة التالية</h3>
+            <p>لوحة الإدارة جاهزة لإضافة وظائف أخرى بعد تحديدها، مثل إعدادات الكاميرا أو إدارة قائمة السيرفرات.</p>
+          </div>
         </section>
+
         <footer className="dashboard-footer">
           <span>ARK CONTROL CONSOLE</span><span>لوحة داخلية · دخول مصرح فقط</span>
         </footer>
