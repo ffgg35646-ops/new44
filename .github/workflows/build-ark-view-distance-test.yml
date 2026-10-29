@@ -33,11 +33,23 @@ jobs:
           command -v unzip
           root="$RUNNER_TEMP/ark-view-distance"
           mkdir -p "$root/tools"
-          curl --fail --location --retry 3 --retry-all-errors --connect-timeout 20 --max-time 300 --silent --show-error \
-            -o "$root/build-tools.zip" https://dl.google.com/android/repository/build-tools_r35-linux.zip
-          unzip -q "$root/build-tools.zip" -d "$root/tools"
-          apksigner=$(find "$root/tools" -type f -name apksigner -print -quit)
-          zipalign=$(find "$root/tools" -type f -name zipalign -print -quit)
+          sdk_roots=()
+          [[ -n "${ANDROID_HOME:-}" ]] && sdk_roots+=("$ANDROID_HOME")
+          [[ -d /usr/local/lib/android/sdk ]] && sdk_roots+=(/usr/local/lib/android/sdk)
+          [[ -d /opt/android-sdk ]] && sdk_roots+=(/opt/android-sdk)
+          apksigner=""
+          zipalign=""
+          if [[ "${#sdk_roots[@]}" -gt 0 ]]; then
+            apksigner=$(find "${sdk_roots[@]}" -type f -name apksigner -print -quit 2>/dev/null || true)
+            zipalign=$(find "${sdk_roots[@]}" -type f -name zipalign -print -quit 2>/dev/null || true)
+          fi
+          if [[ -z "$apksigner" || -z "$zipalign" ]]; then
+            curl --fail --location --retry 2 --retry-all-errors --connect-timeout 15 --max-time 240 --silent --show-error \
+              -o "$root/build-tools.zip" https://dl.google.com/android/repository/build-tools_r35-linux.zip
+            unzip -q "$root/build-tools.zip" -d "$root/tools"
+            apksigner=$(find "$root/tools" -type f -name apksigner -print -quit)
+            zipalign=$(find "$root/tools" -type f -name zipalign -print -quit)
+          fi
           test -n "$apksigner"
           test -n "$zipalign"
           chmod +x "$apksigner" "$zipalign"
