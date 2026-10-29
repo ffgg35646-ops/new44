@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - admin-dashboard-initial
+      - admin-quality-control
     paths:
       - 'app/**'
       - 'lib/**'
