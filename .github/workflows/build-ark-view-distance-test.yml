@@ -53,7 +53,8 @@ jobs:
           fi
           test -n "$apksigner"
           test -n "$zipalign"
-          chmod +x "$apksigner" "$zipalign"
+          test -x "$apksigner"
+          test -x "$zipalign"
           echo "APKSIGNER=$apksigner" >> "$GITHUB_ENV"
           echo "ZIPALIGN=$zipalign" >> "$GITHUB_ENV"
           java -version
