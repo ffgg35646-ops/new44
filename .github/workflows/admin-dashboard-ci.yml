@@ -1,0 +1,45 @@
+name: Admin dashboard checks
+
+on:
+  push:
+    branches:
+      - admin-dashboard-initial
+    paths:
+      - 'app/**'
+      - 'lib/**'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'next.config.ts'
+      - 'next-env.d.ts'
+      - '.github/workflows/admin-dashboard-ci.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'lib/**'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'next.config.ts'
+      - 'next-env.d.ts'
+      - '.github/workflows/admin-dashboard-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Type-check
+        run: npm run typecheck
+      - name: Build dashboard
+        run: npm run build

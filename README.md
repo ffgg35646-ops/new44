@@ -1,3 +1,29 @@
-# new44
+# ARK Control Dashboard
 
-Repository initialized for personal file-transfer and analysis notes.
+لوحة إدارة أولية لمشروع ARK Control. الإصدار الحالي يحتوي على تسجيل دخول أدمن ومساحة رئيسية فارغة لإضافة الوظائف التي يتم تحديدها لاحقًا.
+
+## الموجود حاليًا
+
+- واجهة عربية RTL ومتجاوبة.
+- تسجيل دخول يعتمد على متغيرات بيئة سرية، بدون بيانات دخول افتراضية مضمّنة في الكود.
+- جلسة موقعة على الخادم في Cookie من نوع HttpOnly وSameSite، تنتهي بعد 8 ساعات.
+- حماية صفحة لوحة التحكم وتسجيل خروج يمسح الجلسة.
+- لا يوجد ربط بسيرفرات اللعبة أو تحكم في خصائص اللعبة في هذه المرحلة.
+
+## التشغيل المحلي
+
+1. استخدم Node.js 20.9 أو أحدث.
+2. انسخ `.env.example` إلى `.env.local`.
+3. عيّن `ADMIN_USERNAME` و`ADMIN_PASSWORD` إلى بيانات قوية خاصة بك (كلمة المرور 12 حرفًا على الأقل).
+4. ولّد `ADMIN_SESSION_SECRET` بالأمر `openssl rand -base64 48` وضع الناتج في `.env.local`.
+5. نفّذ `npm install` ثم `npm run dev`.
+6. افتح `http://localhost:3000/login`.
+
+لا ترفع `.env.local` أو أسرار الدخول إلى GitHub. أضف متغيرات البيئة السرية من إعدادات الاستضافة عند النشر.
+
+## التحقق
+
+- `npm run typecheck`
+- `npm run build`
+
+المشروع محفوظ في فرع `admin-dashboard-initial`. لم يتم نشره على Vercel.
