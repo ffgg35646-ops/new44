@@ -19,15 +19,21 @@ jobs:
       - name: Checkout workflow
         uses: actions/checkout@v4
 
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Install APK tools and ZIP utilities
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y zip unzip openjdk-21-jdk-headless
+          command -v zip
+          command -v unzip
           root="$RUNNER_TEMP/ark-view-distance"
           mkdir -p "$root/tools"
-          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+          curl --fail --location --retry 3 --retry-all-errors --connect-timeout 20 --max-time 300 --silent --show-error \
             -o "$root/build-tools.zip" https://dl.google.com/android/repository/build-tools_r35-linux.zip
           unzip -q "$root/build-tools.zip" -d "$root/tools"
           apksigner=$(find "$root/tools" -type f -name apksigner -print -quit)
