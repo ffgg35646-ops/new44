@@ -1,0 +1,263 @@
+name: Build ARK enhanced view-distance test APK set
+
+on:
+  push:
+    branches:
+      - ark-view-distance-test-build
+    paths:
+      - '.github/workflows/build-ark-view-distance-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout workflow
+        uses: actions/checkout@v4
+
+      - name: Install APK tools and ZIP utilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zip unzip openjdk-21-jdk-headless
+          root="$RUNNER_TEMP/ark-view-distance"
+          mkdir -p "$root/tools"
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+            -o "$root/build-tools.zip" https://dl.google.com/android/repository/build-tools_r35-linux.zip
+          unzip -q "$root/build-tools.zip" -d "$root/tools"
+          apksigner=$(find "$root/tools" -type f -name apksigner -print -quit)
+          zipalign=$(find "$root/tools" -type f -name zipalign -print -quit)
+          test -n "$apksigner"
+          test -n "$zipalign"
+          chmod +x "$apksigner" "$zipalign"
+          echo "APKSIGNER=$apksigner" >> "$GITHUB_ENV"
+          echo "ZIPALIGN=$zipalign" >> "$GITHUB_ENV"
+          java -version
+          "$apksigner" version
+
+      - name: Download and verify the exact user-provided APKS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ark-view-distance"
+          mkdir -p "$root/apks"
+          api='https://api.github.com/repos/ffgg35646-ops/new44/releases/assets/683305514'
+          code=$(curl --silent --show-error --max-time 60 -D "$root/asset-headers.txt" -o "$root/asset-response.bin" -w '%{http_code}' \
+            -H 'Accept: application/octet-stream' -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' "$api" || true)
+          unset GH_TOKEN
+          if [[ "$code" == "200" ]]; then
+            mv "$root/asset-response.bin" "$root/original.apks"
+          elif [[ "$code" == "302" || "$code" == "301" || "$code" == "307" || "$code" == "308" ]]; then
+            location=$(python - "$root/asset-headers.txt" <<'PY'
+          import sys
+          vals=[x.split(':',1)[1].strip() for x in open(sys.argv[1],errors='replace') if x.lower().startswith('location:')]
+          print(vals[-1] if vals else '')
+          PY
+          )
+            test -n "$location"
+            curl --fail --location --retry 3 --retry-all-errors --silent --show-error --max-time 5400 "$location" -o "$root/original.apks"
+          else
+            echo "APKS download failed with HTTP $code"
+            head -c 1200 "$root/asset-response.bin" || true
+            exit 1
+          fi
+          size=$(stat -c '%s' "$root/original.apks")
+          digest=$(sha256sum "$root/original.apks" | cut -d' ' -f1)
+          echo "Original bytes: $size"
+          echo "Original SHA-256: $digest"
+          [[ "$size" == "1719866207" ]]
+          [[ "$digest" == "8a49c3776c38ae6e82fbe8edd2a85c2cadfd96f1515b08168543eb666dc116a4" ]]
+          python - "$root/original.apks" "$root/apks" <<'PY'
+          import sys, zipfile, shutil
+          from pathlib import Path
+          src, out = Path(sys.argv[1]), Path(sys.argv[2])
+          with zipfile.ZipFile(src) as z:
+              seen=set()
+              for info in z.infolist():
+                  if info.is_dir():
+                      continue
+                  if not (info.filename.lower().endswith('.apk') or info.filename == 'APKCube.txt'):
+                      continue
+                  target=out/Path(info.filename).name
+                  if target.name in seen:
+                      raise SystemExit(f'Duplicate top-level entry: {target.name}')
+                  seen.add(target.name)
+                  with z.open(info) as r, target.open('wb') as w:
+                      shutil.copyfileobj(r,w,8*1024*1024)
+          names=sorted(p.name for p in out.glob('*.apk'))
+          print('APK splits extracted:', names)
+          if names != ['base.apk','split_config.arm64_v8a.apk','split_obbassets.apk']:
+              raise SystemExit(f'Unexpected APK split set: {names}')
+          PY
+          rm -f "$root/original.apks" "$root/asset-response.bin" "$root/asset-headers.txt"
+
+      - name: Extract target game payload and inspect original PAK version
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ark-view-distance"
+          python - "$root/apks/split_obbassets.apk" "$root/game_payload.zip" "$root/main-pak" <<'PY'
+          import sys, zipfile, shutil
+          from pathlib import Path
+          apk, payload, pak = map(Path, sys.argv[1:])
+          with zipfile.ZipFile(apk) as z:
+              with z.open('assets/main.obb.png') as src, payload.open('wb') as dst:
+                  shutil.copyfileobj(src,dst,8*1024*1024)
+          with zipfile.ZipFile(payload) as z:
+              name='ShooterGame/Content/Paks/pakchunk0-Android_ASTC.pak'
+              with z.open(name) as src, pak.open('wb') as dst:
+                  shutil.copyfileobj(src,dst,8*1024*1024)
+              print('Payload entries:', len(z.infolist()))
+          print('Main PAK bytes:', pak.stat().st_size)
+          PY
+          mkdir -p "$root/repak-tool"
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+            -o "$root/repak-tool/repak.tar.xz" https://github.com/trumank/repak/releases/download/v0.2.3/repak_cli-x86_64-unknown-linux-gnu.tar.xz
+          curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+            -o "$root/repak-tool/repak.sha256" https://github.com/trumank/repak/releases/download/v0.2.3/repak_cli-x86_64-unknown-linux-gnu.tar.xz.sha256
+          expected=$(awk 'NR==1 {print $1}' "$root/repak-tool/repak.sha256")
+          actual=$(sha256sum "$root/repak-tool/repak.tar.xz" | awk '{print $1}')
+          [[ "$expected" == "$actual" ]]
+          mkdir -p "$root/repak-tool/extracted"
+          tar -xJf "$root/repak-tool/repak.tar.xz" -C "$root/repak-tool/extracted"
+          repak=$(find "$root/repak-tool/extracted" -type f -name repak -print -quit)
+          test -n "$repak"
+          chmod +x "$repak"
+          echo "$repak" > "$root/repak-bin.txt"
+          "$repak" info "$root/main-pak" | tee "$root/main-pak-info.txt"
+          grep -q 'version: V11' "$root/main-pak-info.txt"
+
+      - name: Build a compatible high-view-distance patch PAK
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ark-view-distance"
+          repak=$(cat "$root/repak-bin.txt")
+          mod="$root/arkviewmod"
+          mkdir -p "$mod/Engine/Config/Android"
+          mkdir -p "$mod/Engine/Config"
+          "$repak" get "$root/main-pak" 'Engine/Config/Android/AndroidScalability.ini' > "$mod/Engine/Config/Android/AndroidScalability.ini"
+          "$repak" get "$root/main-pak" 'Engine/Config/BaseScalability.ini' > "$mod/Engine/Config/BaseScalability.ini"
+          python - "$mod/Engine/Config/Android/AndroidScalability.ini" "$mod/Engine/Config/BaseScalability.ini" <<'PY'
+          import re, sys
+          from pathlib import Path
+          files=[Path(x) for x in sys.argv[1:]]
+          levels={
+              '[ViewDistanceQuality@0]':'2.0',
+              '[ViewDistanceQuality@1]':'3.0',
+              '[ViewDistanceQuality@2]':'4.0',
+              '[ViewDistanceQuality@3]':'5.0',
+          }
+          for p in files:
+              original=p.read_text(encoding='utf-8',errors='strict')
+              lines=original.splitlines()
+              section=''
+              seen={key:0 for key in levels}
+              out=[]
+              for line in lines:
+                  s=line.strip()
+                  if s.startswith('[') and s.endswith(']'):
+                      section=s
+                  if section in levels and re.match(r'^\s*r\.ViewDistanceScale\s*=',line,re.I):
+                      line=re.sub(r'^(\s*r\.ViewDistanceScale\s*=\s*).+$',lambda m:m.group(1)+levels[section],line,flags=re.I)
+                      seen[section]+=1
+                  out.append(line)
+              missing=[k for k,v in seen.items() if v != 1]
+              if missing:
+                  raise SystemExit(f'{p}: expected exactly one r.ViewDistanceScale in each target section; found {seen}')
+              p.write_text('\n'.join(out)+'\n',encoding='utf-8')
+              print(f'Patched {p.relative_to(p.parents[4]) if len(p.parents)>4 else p}:')
+              for i,line in enumerate(out,1):
+                  if re.match(r'^\s*r\.ViewDistanceScale\s*=',line,re.I):
+                      print(f'  {i}: {line.strip()}')
+          PY
+          "$repak" pack --version V11 "$mod"
+          test -s "$root/arkviewmod.pak"
+          "$repak" info "$root/arkviewmod.pak" | tee "$root/patch-pak-info.txt"
+          "$repak" list "$root/arkviewmod.pak" | tee "$root/patch-pak-list.txt"
+          grep -Fxq 'Engine/Config/Android/AndroidScalability.ini' "$root/patch-pak-list.txt"
+          grep -Fxq 'Engine/Config/BaseScalability.ini' "$root/patch-pak-list.txt"
+          "$repak" get "$root/arkviewmod.pak" 'Engine/Config/Android/AndroidScalability.ini' | grep -E '^r\.ViewDistanceScale=' || true
+          mkdir -p "$root/payload-patch/ShooterGame/Content/Paks"
+          cp "$root/arkviewmod.pak" "$root/payload-patch/ShooterGame/Content/Paks/pakchunk0_s03-Android_ASTC_P.pak"
+          (cd "$root/payload-patch" && zip -0 -u "$root/game_payload.zip" ShooterGame/Content/Paks/pakchunk0_s03-Android_ASTC_P.pak)
+          unzip -Z1 "$root/game_payload.zip" | grep -Fx 'ShooterGame/Content/Paks/pakchunk0_s03-Android_ASTC_P.pak'
+          rm -rf "$mod" "$root/main-pak" "$root/repak-tool" "$root/payload-patch" "$root/arkviewmod.pak"
+
+      - name: Replace the nested payload in the APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ark-view-distance"
+          mkdir -p "$root/asset-replacement/assets"
+          cp "$root/game_payload.zip" "$root/asset-replacement/assets/main.obb.png"
+          (cd "$root/asset-replacement" && zip -0 -u "$root/apks/split_obbassets.apk" assets/main.obb.png)
+          unzip -Z1 "$root/apks/split_obbassets.apk" | grep -Fx 'assets/main.obb.png'
+          rm -rf "$root/game_payload.zip" "$root/asset-replacement"
+          unzip -p "$root/apks/split_obbassets.apk" assets/main.obb.png > "$root/roundtrip-payload.zip"
+          unzip -Z1 "$root/roundtrip-payload.zip" | grep -Fx 'ShooterGame/Content/Paks/pakchunk0_s03-Android_ASTC_P.pak'
+          rm -f "$root/roundtrip-payload.zip"
+
+      - name: Re-align and sign all APK splits for a private test build
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ark-view-distance"
+          mkdir -p "$root/aligned" "$root/signed"
+          storepass=$(openssl rand -hex 20)
+          keytool -genkeypair -v \
+            -keystore "$root/ark-view-test.keystore" \
+            -storepass "$storepass" -keypass "$storepass" \
+            -alias ark-view-test -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=ARK View Distance Test,O=Custom Test Build,C=EG' -noprompt
+          for apk in "$root"/apks/*.apk; do
+            name=$(basename "$apk")
+            echo "Aligning and signing $name"
+            "$ZIPALIGN" -f -p 4 "$apk" "$root/aligned/$name"
+            "$APKSIGNER" sign \
+              --ks "$root/ark-view-test.keystore" \
+              --ks-key-alias ark-view-test \
+              --ks-pass "pass:$storepass" --key-pass "pass:$storepass" \
+              --out "$root/signed/$name" "$root/aligned/$name"
+            "$APKSIGNER" verify --verbose "$root/signed/$name"
+            rm -f "$apk" "$root/aligned/$name"
+          done
+          rm -rf "$root/aligned" "$root/ark-view-test.keystore"
+          printf '%s\n' 'Test build only: renderer view-distance multipliers were raised in a patch PAK.' > "$root/BUILD-NOTES.txt"
+          printf '%s\n' 'Signing certificate is newly generated for this test build. Uninstall any app with the same package ID but a different signing certificate before installing.' >> "$root/BUILD-NOTES.txt"
+          printf '%s\n' 'No in-device gameplay test has been run. Distant rendering may increase GPU/CPU load; server replication and per-creature draw limits are not changed by this graphics patch.' >> "$root/BUILD-NOTES.txt"
+
+      - name: Assemble the signed APKS bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ark-view-distance"
+          (cd "$root/signed" && zip -1 -j "$root/ARK-View-Distance-Test.apks" base.apk split_config.arm64_v8a.apk split_obbassets.apk)
+          if [[ -f "$root/apks/APKCube.txt" ]]; then
+            cp "$root/apks/APKCube.txt" "$root/APKCube-source.txt"
+            (cd "$root" && zip -q -u ARK-View-Distance-Test.apks APKCube-source.txt)
+          fi
+          unzip -t "$root/ARK-View-Distance-Test.apks" | tail -n 2
+          sha256sum "$root/ARK-View-Distance-Test.apks" | tee "$root/output-sha256.txt"
+          ls -lh "$root/ARK-View-Distance-Test.apks"
+
+      - name: Upload the test build and validation notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARK-View-Distance-Test
+          path: |
+            ${{ runner.temp }}/ark-view-distance/ARK-View-Distance-Test.apks
+            ${{ runner.temp }}/ark-view-distance/BUILD-NOTES.txt
+            ${{ runner.temp }}/ark-view-distance/output-sha256.txt
+            ${{ runner.temp }}/ark-view-distance/patch-pak-info.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
